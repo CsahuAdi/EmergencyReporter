@@ -4,3 +4,7 @@ numpy
 matplotlib
 datetime
 folium
+xgboost
+scikit-learn
+tensorflow
+optuna

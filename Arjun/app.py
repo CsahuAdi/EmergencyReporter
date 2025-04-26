@@ -1,27 +1,180 @@
-import pandas as pd
+import streamlit as st
 import folium
-from folium.plugins import HeatMap
+from streamlit_folium import st_folium
+import pickle
+import pandas as pd
+import matplotlib.pyplot as plt
+import time
+from sklearn.ensemble import IsolationForest
 
-from IPython.display import display
+# Page configuration
+st.set_page_config(
+    page_title="Seattle Emergency Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Load dataset
-df = pd.read_csv('seattle.csv')  # Uncomment if using a CSV file
+# Custom CSS for styling
+st.markdown("""
+    <style>
+    .main {background-color: #f8f9fa;}
+    .stButton>button {
+        background-color: #dc3545;
+        color: white;
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: bold;
+    }
+    .stButton>button:hover {
+        background-color: #c82333;
+    }
+    .card {
+        background-color: black;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
+    .title {
+        color: #2c3e50;
+        font-weight: bold;
+    }
+    .subheader {
+        color: #34495e;
+        font-weight: 600;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-size: 16px;
+        font-weight: 500;
+        color: #34495e;
+    }
+    .stTabs [data-baseweb="tab"][aria-selected="true"] {
+        color: #dc3545;
+        border-bottom: 2px solid #dc3545;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-# Assuming df is already loaded
-df = df.dropna(subset=['Latitude', 'Longitude'])
+# Load model and data
+@st.cache_resource
+def load_model():
+    with open('emergency_model.pkl', 'rb') as f:
+        return pickle.load(f)
 
-# Optional: Filter only Seattle area coordinates
-# df = df[(df['Latitude'] >= 47.4) & (df['Latitude'] <= 47.8) &
-#         (df['Longitude'] >= -122.5) & (df['Longitude'] <= -122.2)]
+model = load_model()
 
-# Create map centered at Seattle
-seattle_map = folium.Map(location=[47.6062, -122.3321], zoom_start=12)
+@st.cache_data
+def load_data():
+    df = pd.read_csv('../seattle.csv')
+    df['Date'] = pd.to_datetime(df['Datetime'])
+    df.set_index('Date', inplace=True)
+    return df
 
-# Prepare heatmap data
-heat_data = [[row['Latitude'], row['Longitude']] for index, row in df.iterrows()]
+df = load_data()
 
-# Add heatmap layer
-HeatMap(heat_data, radius=8).add_to(seattle_map)
+# Main title
+st.markdown("<h1 class='title'>🚨 Seattle Emergency Dashboard</h1>", unsafe_allow_html=True)
 
-# Display map inline
-seattle_map
+# Sidebar for controls and information
+with st.sidebar:
+    st.markdown("<h3 class='title'>Dashboard Controls</h3>", unsafe_allow_html=True)
+    st.markdown("Monitor emergencies in Seattle with real-time predictions and anomaly detection.")
+    
+    st.markdown("### Instructions")
+    st.markdown("- **Map Tab**: Click on the map to predict emergency types")
+    st.markdown("- **Trends Tab**: Monitor live emergency trends and anomalies")
+    
+    st.markdown("### Data Source")
+    st.markdown("Seattle Emergency Services Data (CSV)")
+    
+    st.markdown("### About")
+    st.markdown("Built with Streamlit and Folium")
+
+# Create tabs for Map and Live Trends
+tab1, tab2 = st.tabs(["📍 Interactive Map", "📈 Live Trends"])
+
+# Map Tab
+with tab1:
+    col_map, col_stats = st.columns([3, 1])
+    
+    with col_map:
+        st.markdown("<div class='card'><h3 class='subheader'>📍 Interactive Emergency Prediction Map</h3>", unsafe_allow_html=True)
+        
+        # Map initialization
+        seattle_map = folium.Map(location=[47.6062, -122.3321], zoom_start=12, tiles="CartoDB Positron")
+        seattle_map.add_child(folium.LatLngPopup())
+        
+        # Display map
+        map_data = st_folium(seattle_map, width=900, height=500, key="map")
+        
+        # Handle map click
+        if map_data['last_clicked'] is not None:
+            lat = map_data['last_clicked']['lat']
+            lon = map_data['last_clicked']['lng']
+            
+            st.success(f"**Location Selected**: Latitude: {lat:.4f}, Longitude: {lon:.4f}")
+            prediction = model.predict([[lat, lon]])[0]
+            st.info(f"🚑 **Predicted Emergency Type**: {prediction}")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+    
+    with col_stats:
+        st.markdown("<div class='card'><h3 class='subheader'>📊 Quick Stats</h3>", unsafe_allow_html=True)
+        st.markdown("**Total Emergencies**: " + str(len(df)))
+        st.markdown("**Date Range**: " + f"{df.index.min().date()} to {df.index.max().date()}")
+        st.markdown("**Anomaly Detection Model**: Isolation Forest")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+# Live Trends Tab
+with tab2:
+    col_trends, col_stats2 = st.columns([3, 1])
+    
+    with col_trends:
+        st.markdown("<div class='card'><h3 class='subheader'>📈 Live Emergency Trends & Anomaly Detection</h3>", unsafe_allow_html=True)
+        
+        def live_plot():
+            hourly_emergencies = df.resample('H').size()
+            X = hourly_emergencies.values.reshape(-1, 1)
+            
+            clf = IsolationForest(contamination=0.001, random_state=42)
+            clf.fit(X)
+            anomalies = clf.predict(X)
+            
+            anomalous_dates = hourly_emergencies.index[anomalies == -1]
+            anomalous_counts = hourly_emergencies[anomalies == -1]
+            
+            plot_placeholder = st.empty()
+            
+            for i in range(24, len(hourly_emergencies)):
+                fig, ax = plt.subplots(figsize=(12, 6))
+                ax.plot(hourly_emergencies.index[:i], hourly_emergencies.values[:i], 
+                       label='Hourly Emergencies', color='#2c3e50')
+                
+                ax.scatter(anomalous_dates[anomalous_dates <= hourly_emergencies.index[i]],
+                          anomalous_counts[anomalous_dates <= hourly_emergencies.index[i]],
+                          color='#dc3545', label='Anomalies', s=100)
+                
+                ax.set_title('Hourly Emergency Trends with Anomaly Detection', fontsize=14, pad=15)
+                ax.set_xlabel('Date', fontsize=12)
+                ax.set_ylabel('Number of Emergencies', fontsize=12)
+                ax.legend()
+                ax.grid(True, linestyle='--', alpha=0.7)
+                
+                plot_placeholder.pyplot(fig)
+                
+                if hourly_emergencies.index[i] in anomalous_dates:
+                    st.error(f"🚨 **RED ALERT!** Anomaly detected at {hourly_emergencies.index[i]}")
+                
+                time.sleep(0.01)
+        
+        if st.button('Start Live Monitoring 🚨', key="monitor_button"):
+            live_plot()
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+    
+    with col_stats2:
+        st.markdown("<div class='card'><h3 class='subheader'>📊 Quick Stats</h3>", unsafe_allow_html=True)
+        st.markdown("**Total Emergencies**: " + str(len(df)))
+        st.markdown("**Date Range**: " + f"{df.index.min().date()} to {df.index.max().date()}")
+        st.markdown("**Anomaly Detection Model**: Isolation Forest")
+        st.markdown("</div>", unsafe_allow_html=True)
